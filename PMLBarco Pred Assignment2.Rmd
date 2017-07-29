@@ -1,0 +1,184 @@
+---
+title: "Practical Machine Learning - Prediction Assignment"
+author: "Carlos Barco"
+date: "7/28/2017"
+output:
+  html_document: default
+  pdf_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(knitr)
+```
+
+#Introduction
+Data collection through self-monitoring and self-sensing combines wearable sensors (e.g.Electroencephalography, Electrocardiography) and [wearable computing](https://en.wikipedia.org/wiki/Wearable_computer) (smartwatchs, heart rate monitors, etc.) [See Quantified self](https://en.wikipedia.org/wiki/Quantified_Self).  
+Using wereable computers like known fitness accessories is now possible to collect a large amount of data about fitness personal activity in an inexpensively way. This trackers devices are part of a “life logging” movement, and a general characteristic of the information collected is that is known how much a particular activity was did it, but rarely quantified how well they did it.  
+In this project, the goal is to use data from accelerometers on the belt, forearm, arm, and dumbell of 6 participants. They were asked to perform barbell lifts correctly and incorrectly in 5 different ways. More information is available from the website: http://groupware.les.inf.puc-rio.br/har (see the section on the Weight Lifting Exercise Dataset).  
+
+#Executive Resume
+In this project, your goal will be to use data from accelerometers on the belt, forearm, arm, and dumbell of 6 participants. They were asked to perform barbell lifts correctly and incorrectly in 5 different ways.  
+The goal of this project is to predict the manner in which they did the exercise. This is the "classe" variable in the training set.  
+
+##Building the model
+
+###Reproducibility
+####Preparing the data and R packages
+The following Libraries were used for this project, so you should install and load them in your own working environment.
+```{r}
+library(caret)
+library(rpart)
+library(rpart.plot)
+library(randomForest)
+library(corrplot)
+library(RColorBrewer)
+set.seed(56789) #for reproducibility purposes
+```
+
+```{r}
+getRversion()
+```
+
+I choose randomForest (as a supervised learning algorithm), because of their known utility in classification problems, and gives an acceptable level of performance.
+
+####Getting Data
+```{r}
+trainUrl <-"https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv"
+testUrl <- "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv"
+trainFile <- "/Users/carlosbarco/R/pml-training.csv"
+testFile  <- "/Users/carlosbarco/R/pml-testing.csv"
+if (!file.exists("./data")) {
+  dir.create("./data")
+}
+if (!file.exists(trainFile)) {
+  download.file(trainUrl, destfile=trainFile, method="curl")
+}
+if (!file.exists(testFile)) {
+  download.file(testUrl, destfile=testFile, method="curl")
+}
+#Read the two data files into two independent data frames
+trainRaw <- read.csv("/Users/carlosbarco/R/pml-training.csv", sep = ",")
+testRaw <- read.csv("/Users/carlosbarco/R/pml-testing.csv", sep = ",")
+dim(trainRaw)
+dim(testRaw)
+```
+_The raw training data has 19622 rows of observations and 160 features (predictors), inside the column X is an unusable row number. In raw test set exists 20 rows and the same 160 features. Inside this, column "classe" is the target outcome to predict._
+
+#### Data Cleaning
+
+Features require consistent data, and at the moment, there is so much useless values to be removed.  
+1) Reduce the number of predictors (activity monitors) by removing columns that have zero values, NA or are emptys (meaningless variables).  
+```{r}
+trainRaw <- trainRaw[, colSums(is.na(trainRaw)) == 0] 
+testRaw <- testRaw[, colSums(is.na(testRaw)) == 0] 
+```
+
+2) Remove a few columns that are not useful for accelerometer function and contains NA´s: X (sequential number), user_name, raw_timestamp_part_1, raw_timestamp_part_2, cvtd_timestamp, new_window, num_window.
+```{r}
+classe <- trainRaw$classe
+trainRemove <- grepl("^X|timestamp|window", names(trainRaw))
+trainRaw <- trainRaw[, !trainRemove]
+trainCleaned <- trainRaw[, sapply(trainRaw, is.numeric)]
+trainCleaned$classe <- classe
+testRemove <- grepl("^X|timestamp|window", names(testRaw))
+testRaw <- testRaw[, !testRemove]
+testCleaned <- testRaw[, sapply(testRaw, is.numeric)]
+```
+
+```{r}
+dim(trainCleaned)
+dim(testCleaned)
+```
+With the cleaning process above, the number of variables for the analysis has been reduced to 53 only
+
+
+####Correlation Analysis in the Training Data Set
+_Plot a correlation matrix between features and outcomes, in order to see if they are orthogonal each others._  
+```{r}
+corMatrix <- cor(trainCleaned[, -53])
+corrplot(corMatrix, order = "hclust", method = "color", type = "lower", 
+         tl.cex = 0.5, tl.col = rgb(0, 0, 0))
+```
+*In darker are the most correlated variables.*
+_There is a not too high correlation between features._  
+
+###Partitioning Training Set
+Was achieved by splitting the training data into a training set (70%) and a validation set (30%) using the following:
+```{r}
+set.seed(56789) # For reproducibile purpose
+inTrain <- createDataPartition(trainCleaned$classe, p = 0.70, list = FALSE)
+validation <- trainCleaned[-inTrain, ]
+training <- trainCleaned[inTrain, ]
+rm(inTrain)
+```
+
+The training data set consist of
+```{r}
+dim(training)
+```
+
+The validation data set
+```{r}
+dim(validation)
+```
+
+and the Testing Data of
+```{r}
+dim(testCleaned)
+```
+
+####Build Data Modeling
+###Decision Tree
+_Predictive model for activity recognition_
+```{r}
+modelTree <- rpart(classe ~ ., data = training, method = "class")
+prp(modelTree)
+```
+
+_Performance of the model on the validation data set_
+```{r}
+predictTree <- predict(modelTree, validation, type = "class")
+confusionMatrix(validation$classe, predictTree)
+accuracy <- postResample(predictTree, validation$classe)
+ose <- 1 - as.numeric(confusionMatrix(validation$classe, predictTree)$overall[1])
+rm(predictTree)
+rm(modelTree)
+```
+
+###Random Forest
+_Being the training size 70 % of total dataset, the bias can not be ignored and k=5 is reasonable [Choice of K in K-fold cross-validation]https://stats.stackexchange.com/questions/27730/choice-of-k-in-k-fold-cross-validation)  _
+```{r}
+modelRF <- train(classe ~ ., data = training, method = "rf", trControl = trainControl(method = "cv", 5), ntree = 250)
+modelRF
+```
+
+_Now, we estimate the performance of the model on the validation data set._
+
+```{r}
+predictRF <- predict(modelRF, validation)
+confusionMatrix(validation$classe, predictRF)
+accuracy <- postResample(predictRF, validation$classe)
+ose <- 1 - as.numeric(confusionMatrix(validation$classe, predictRF)$overall[1])
+rm(predictRF)
+```
+
+##Evaluate the model (out-of-Sample Error)
+*Now, we apply the Random Forest model to the original testing data set downloaded from the data source. We remove the problem_id column first.*
+```{r}
+rm(accuracy)
+rm(ose)
+predict(modelRF, testCleaned[, -length(names(testCleaned))])
+```
+
+# Creates submission files
+```{r}
+pml_write_files = function(x){
+    n = length(x)
+    for(i in 1:n){
+        filename = paste0("problem_id_",i,".txt")
+        write.table(x[i],file=filename,quote=FALSE,row.names=FALSE,col.names=FALSE)
+    }
+}
+```
+
